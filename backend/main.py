@@ -6,13 +6,15 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api import models, chat
+from api import models, chat, rag, settings
 import uvicorn
 
 app = FastAPI()
 
 app.include_router(models.router)
 app.include_router(chat.router)
+app.include_router(rag.router)
+app.include_router(settings.router)
 
 # Configure CORS to allow requests from the Electron renderer
 app.add_middleware(

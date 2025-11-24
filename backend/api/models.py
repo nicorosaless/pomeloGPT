@@ -124,11 +124,14 @@ AVAILABLE_MODELS = [
 
 @router.get("/installed")
 async def list_installed_models():
+    print("Fetching installed models from Ollama...")
     try:
         response = ollama.list()
+        print(f"Ollama response: {response}")
         # response['models'] is a list of dicts
         return response
     except Exception as e:
+        print(f"Error fetching models: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/available")

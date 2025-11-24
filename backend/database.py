@@ -14,29 +14,46 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
-    
-    # Create conversations table
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS conversations (
-        id TEXT PRIMARY KEY,
-        title TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS conversations (
+            id TEXT PRIMARY KEY,
+            title TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
     ''')
-    
-    # Create messages table
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        conversation_id TEXT,
-        role TEXT,
-        content TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (conversation_id) REFERENCES conversations (id)
-    )
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id TEXT,
+            role TEXT,
+            content TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(conversation_id) REFERENCES conversations(id)
+        )
     ''')
-    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def get_setting(key):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT value FROM settings WHERE key = ?', (key,))
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+def set_setting(key, value):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', (key, value))
     conn.commit()
     conn.close()
 

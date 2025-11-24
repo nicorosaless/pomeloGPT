@@ -3,7 +3,7 @@ import Sidebar from './components/Sidebar';
 import ChatWindow from './components/ChatWindow';
 import ModelSelector from './components/ModelSelector';
 import DocumentPanel from './components/DocumentPanel';
-import OllamaManager from './components/OllamaManager';
+import SettingsPage from './components/SettingsPage';
 import './App.css';
 
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
@@ -56,8 +56,8 @@ function App() {
                             </div>
                         )}
 
-                        {activeMode === 'models' && (
-                            <OllamaManager />
+                        {activeMode === 'settings' && (
+                            <SettingsPage />
                         )}
 
                         {activeMode === 'documents' && (

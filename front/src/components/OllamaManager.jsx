@@ -17,11 +17,15 @@ const OllamaManager = () => {
     }, []);
 
     const fetchInstalledModels = async () => {
+        console.log("Fetching installed models...");
         try {
             const res = await window.api.invoke('api-call', 'models/installed', {}, 'GET');
+            console.log("Installed models response:", res);
             // Backend returns { models: [...] }
             if (res.models) {
                 setInstalledModels(res.models);
+            } else {
+                console.warn("No models property in response:", res);
             }
         } catch (err) {
             console.error("Failed to fetch installed models", err);

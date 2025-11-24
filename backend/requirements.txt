@@ -6,3 +6,4 @@ sentence-transformers
 python-multipart
 pydantic
 requests
+pypdf

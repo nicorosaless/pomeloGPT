@@ -46,7 +46,10 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-    startPythonBackend();
+    // In development, start.sh handles the backend. In production, we start it here.
+    if (process.env.NODE_ENV !== 'development') {
+        startPythonBackend();
+    }
     createWindow();
 
     app.on('activate', () => {
