@@ -13,28 +13,47 @@ const Sidebar = ({ activeMode, onSetMode, onToggleSidebar, activeConversationId,
     }, [refreshTrigger]);
 
     useEffect(() => {
-        fetchHistory();
-        // Poll for history updates every 30s
-        const interval = setInterval(fetchHistory, 30000);
+        fetchHistoryWithRetry();
+        // Poll for history updates every 60s
+        const interval = setInterval(() => fetchHistory(), 60000);
         return () => clearInterval(interval);
     }, []);
 
-    const fetchHistory = async (retryCount = 0) => {
-        if (retryCount === 0) setLoading(true);
+    const fetchHistoryWithRetry = async (retryCount = 0) => {
         try {
             const res = await window.api.invoke('api-call', 'chat/history', {}, 'GET');
-            if (res.conversations) {
+            if (res && res.conversations) {
                 setConversations(res.conversations);
                 setLoading(false);
+            } else if (res && res.error) {
+                // Backend returned an error, retry
+                if (retryCount < 10) {
+                    setTimeout(() => fetchHistoryWithRetry(retryCount + 1), 1000);
+                } else {
+                    console.error("Chat history error after retries:", res.error);
+                    setLoading(false);
+                }
             }
         } catch (err) {
-            console.error(`Failed to fetch history (attempt ${retryCount + 1})`, err);
-            // Retry up to 10 times with 1 second delay if it's the initial load (retryCount < 10)
+            // Network/connection error, retry
             if (retryCount < 10) {
-                setTimeout(() => fetchHistory(retryCount + 1), 1000);
+                console.log(`Retrying chat history (${retryCount + 1}/10)...`);
+                setTimeout(() => fetchHistoryWithRetry(retryCount + 1), 1000);
             } else {
+                console.error("Failed to fetch history after retries:", err);
                 setLoading(false);
             }
+        }
+    };
+
+    const fetchHistory = async () => {
+        try {
+            const res = await window.api.invoke('api-call', 'chat/history', {}, 'GET');
+            if (res && res.conversations) {
+                setConversations(res.conversations);
+            }
+        } catch (err) {
+            console.error("Failed to fetch history:", err);
         }
     };
 
@@ -157,18 +176,11 @@ const Sidebar = ({ activeMode, onSetMode, onToggleSidebar, activeConversationId,
 
             <div className="sidebar-footer">
                 <button
-                    className="sidebar-item"
+                    className="sidebar-item settings-icon-only"
                     onClick={() => onSetMode('settings')}
                     title="Settings"
-                    style={{
-                        width: '100%',
-                        justifyContent: 'flex-start',
-                        gap: '10px',
-                        opacity: activeMode === 'settings' ? 1 : 0.7
-                    }}
                 >
                     <Settings size={20} />
-                    <span style={{ fontSize: '0.9rem' }}>Settings</span>
                 </button>
             </div>
         </div>

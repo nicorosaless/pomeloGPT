@@ -6,4 +6,4 @@ sentence-transformers
 python-multipart
 pydantic
 requests
-pypdf
+pypdf>=5.1.0
