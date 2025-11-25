@@ -215,8 +215,9 @@ Today's date is: {datetime.now().strftime('%B %d, %Y')}]
 
         async def generate():
             full_response = ""
+            client = ollama.AsyncClient()
             try:
-                for chunk in ollama.chat(model=request.model, messages=ollama_messages, stream=True):
+                async for chunk in await client.chat(model=request.model, messages=ollama_messages, stream=True):
                     if "message" in chunk and "content" in chunk["message"]:
                         content = chunk["message"]["content"]
                         full_response += content

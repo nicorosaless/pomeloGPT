@@ -1,27 +1,40 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { MessageSquare, Plus, PanelLeftClose, Bot, Pencil, Trash2, Check, X, Settings } from 'lucide-react';
 
-const Sidebar = ({ activeMode, onSetMode, onToggleSidebar, activeConversationId, onSelectChat }) => {
+const Sidebar = ({ activeMode, onSetMode, onToggleSidebar, activeConversationId, onSelectChat, refreshTrigger }) => {
     const [conversations, setConversations] = useState([]);
+    const [loading, setLoading] = useState(true);
     const [editingId, setEditingId] = useState(null);
     const [editTitle, setEditTitle] = useState("");
     const editInputRef = useRef(null);
 
     useEffect(() => {
         fetchHistory();
-        // Poll for history updates every 5s
-        const interval = setInterval(fetchHistory, 5000);
+    }, [refreshTrigger]);
+
+    useEffect(() => {
+        fetchHistory();
+        // Poll for history updates every 30s
+        const interval = setInterval(fetchHistory, 30000);
         return () => clearInterval(interval);
     }, []);
 
-    const fetchHistory = async () => {
+    const fetchHistory = async (retryCount = 0) => {
+        if (retryCount === 0) setLoading(true);
         try {
             const res = await window.api.invoke('api-call', 'chat/history', {}, 'GET');
             if (res.conversations) {
                 setConversations(res.conversations);
+                setLoading(false);
             }
         } catch (err) {
-            console.error("Failed to fetch history", err);
+            console.error(`Failed to fetch history (attempt ${retryCount + 1})`, err);
+            // Retry up to 10 times with 1 second delay if it's the initial load (retryCount < 10)
+            if (retryCount < 10) {
+                setTimeout(() => fetchHistory(retryCount + 1), 1000);
+            } else {
+                setLoading(false);
+            }
         }
     };
 
@@ -97,40 +110,49 @@ const Sidebar = ({ activeMode, onSetMode, onToggleSidebar, activeConversationId,
 
             <div className="history-list">
                 <div className="history-section-label">Recent</div>
-                {conversations.map((conv) => (
-                    <div key={conv.id} className={`history-item-wrapper ${activeConversationId === conv.id ? 'active' : ''}`}>
-                        {editingId === conv.id ? (
-                            <div className="history-edit-container">
-                                <input
-                                    ref={editInputRef}
-                                    className="history-input"
-                                    value={editTitle}
-                                    onChange={(e) => setEditTitle(e.target.value)}
-                                    onKeyDown={handleKeyDown}
-                                    onBlur={saveTitle}
-                                    onClick={(e) => e.stopPropagation()}
-                                />
-                                <button className="icon-btn small" onMouseDown={saveTitle}><Check size={14} /></button>
-                                <button className="icon-btn small" onMouseDown={cancelEditing}><X size={14} /></button>
-                            </div>
-                        ) : (
-                            <button
-                                className="history-item"
-                                onClick={() => onSelectChat(conv.id)}
-                            >
-                                <span className="history-title">{conv.title || "New Chat"}</span>
-                                <div className="history-actions">
-                                    <span className="action-icon" onClick={(e) => startEditing(e, conv)} title="Rename">
-                                        <Pencil size={14} />
-                                    </span>
-                                    <span className="action-icon delete" onClick={(e) => handleDelete(e, conv.id)} title="Delete">
-                                        <Trash2 size={14} />
-                                    </span>
-                                </div>
-                            </button>
-                        )}
+                {loading ? (
+                    <div className="history-loading">
+                        <div className="loading-spinner"></div>
+                        <span>Loading conversations...</span>
                     </div>
-                ))}
+                ) : conversations.length === 0 ? (
+                    <div className="history-empty">No conversations yet</div>
+                ) : (
+                    conversations.map((conv) => (
+                        <div key={conv.id} className={`history-item-wrapper ${activeConversationId === conv.id ? 'active' : ''}`}>
+                            {editingId === conv.id ? (
+                                <div className="history-edit-container">
+                                    <input
+                                        ref={editInputRef}
+                                        className="history-input"
+                                        value={editTitle}
+                                        onChange={(e) => setEditTitle(e.target.value)}
+                                        onKeyDown={handleKeyDown}
+                                        onBlur={saveTitle}
+                                        onClick={(e) => e.stopPropagation()}
+                                    />
+                                    <button className="icon-btn small" onMouseDown={saveTitle}><Check size={14} /></button>
+                                    <button className="icon-btn small" onMouseDown={cancelEditing}><X size={14} /></button>
+                                </div>
+                            ) : (
+                                <button
+                                    className="history-item"
+                                    onClick={() => onSelectChat(conv.id)}
+                                >
+                                    <span className="history-title">{conv.title || "New Chat"}</span>
+                                    <div className="history-actions">
+                                        <span className="action-icon" onClick={(e) => startEditing(e, conv)} title="Rename">
+                                            <Pencil size={14} />
+                                        </span>
+                                        <span className="action-icon delete" onClick={(e) => handleDelete(e, conv.id)} title="Delete">
+                                            <Trash2 size={14} />
+                                        </span>
+                                    </div>
+                                </button>
+                            )}
+                        </div>
+                    ))
+                )}
             </div>
 
             <div className="sidebar-footer">

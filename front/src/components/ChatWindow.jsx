@@ -6,12 +6,14 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import Toast from './Toast';
 
-const ChatWindow = ({ conversationId, onConversationCreated }) => {
+const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar }) => {
     const [messages, setMessages] = useState([
         { role: 'assistant', content: 'Welcome to PomeloGPT. How can I help you today?' }
     ]);
     const [input, setInput] = useState('');
-    const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+    const [webSearchEnabled, setWebSearchEnabled] = useState(() => {
+        return localStorage.getItem('web_search_enabled') === 'true';
+    });
     const [streaming, setStreaming] = useState(false);
     const [toast, setToast] = useState(null); // { message, type }
 
@@ -29,29 +31,80 @@ const ChatWindow = ({ conversationId, onConversationCreated }) => {
 
     const messagesEndRef = useRef(null);
     const textareaRef = useRef(null);
+    const isStreamingRef = useRef(false);
+    const streamingQueueRef = useRef([]);
+    const justCreatedConversationIdRef = useRef(null);
 
     // Load history when conversationId changes
     useEffect(() => {
-        if (conversationId) {
-            loadMessages(conversationId);
-            fetchAttachments(conversationId);
-            setPendingFiles([]); // Clear pending files when switching to an existing chat
-        } else {
-            // Reset for new chat
-            setMessages([
-                { role: 'assistant', content: 'Welcome to PomeloGPT. How can I help you today?' }
-            ]);
-            setAttachments([]);
-            // Keep pending files if we are just staying in new chat mode, 
-            // but if we switched FROM a chat TO new chat, we might want to clear?
-            // Actually, if conversationId becomes null, it means we switched to New Chat.
-            // We should probably clear pending files from previous attempts if any?
-            // Let's assume switching to New Chat clears everything.
-            setPendingFiles([]);
+        console.log("ConversationId changed to:", conversationId);
+        try {
+            if (conversationId) {
+                // If we just created this conversation locally, don't reload messages
+                // to avoid overwriting the current state with potentially incomplete DB state
+                if (conversationId === justCreatedConversationIdRef.current) {
+                    console.log("Skipping loadMessages for just-created conversation");
+                    justCreatedConversationIdRef.current = null;
+                    fetchAttachments(conversationId);
+                } else {
+                    console.log("Loading messages for existing conversation");
+                    loadMessages(conversationId);
+                    fetchAttachments(conversationId);
+                }
+                setPendingFiles([]); // Clear pending files when switching to an existing chat
+            } else {
+                // Reset for new chat
+                console.log("Resetting for new chat");
+                setMessages([
+                    { role: 'assistant', content: 'Welcome to PomeloGPT. How can I help you today?' }
+                ]);
+                setAttachments([]);
+                setPendingFiles([]);
+            }
+        } catch (error) {
+            console.error("Error in conversationId useEffect:", error);
         }
     }, [conversationId]);
 
-    // ... (keep existing useEffects)
+    useEffect(() => {
+        fetchModels();
+    }, []);
+
+    const fetchModels = async (retryCount = 0) => {
+        if (retryCount === 0) setLoadingModels(true);
+
+        try {
+            const res = await window.api.invoke('api-call', 'models/installed', {}, 'GET');
+
+            // Check for error in response object (IPC handler might return { error: ... })
+            if (res.error) {
+                throw new Error(res.error);
+            }
+
+            if (res.models) {
+                setModels(res.models);
+                if (res.models.length > 0) {
+                    // Default to the first model if none selected
+                    if (!selectedModel) {
+                        setSelectedModel(res.models[0].name);
+                    }
+                }
+                setLoadingModels(false);
+            } else {
+                throw new Error("Invalid response format: missing models");
+            }
+        } catch (err) {
+            console.error(`Failed to fetch models (attempt ${retryCount + 1})`, err);
+
+            // Retry up to 10 times with 1 second delay (10 seconds total)
+            if (retryCount < 10) {
+                setTimeout(() => fetchModels(retryCount + 1), 1000);
+            } else {
+                setLoadingModels(false);
+                setToast({ message: "Failed to load models. Is the backend running?", type: "error" });
+            }
+        }
+    };
 
     const loadMessages = async (id) => {
         try {
@@ -138,9 +191,26 @@ const ChatWindow = ({ conversationId, onConversationCreated }) => {
         }
     };
 
-    // ... (keep scrollToBottom and other effects)
+    const scrollToBottom = () => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    };
+
+    useEffect(() => {
+        scrollToBottom();
+    }, [messages, streaming]);
+
+    // Process streaming queue - DISABLED (using direct updates)
+    useEffect(() => {
+        // No-op
+    }, []);
 
     const handleSend = async () => {
+        console.log("=== handleSend START ===");
+        console.log("Input:", input);
+        console.log("Streaming:", streaming);
+        console.log("Selected Model:", selectedModel);
+        console.log("ConversationId:", conversationId);
+
         if (!input.trim() || streaming) return;
         if (!selectedModel) {
             setMessages(prev => [...prev, { role: 'assistant', content: 'Error: No model selected. Please install a model first.' }]);
@@ -150,17 +220,18 @@ const ChatWindow = ({ conversationId, onConversationCreated }) => {
         console.log("Sending request with Web Search:", webSearchEnabled);
 
         const userMessage = { role: 'user', content: input };
-        setMessages(prev => [...prev, userMessage]);
-        setInput('');
-        setStreaming(true);
-        isStreamingRef.current = true;
-        streamingQueueRef.current = []; // Clear queue
-
-        if (textareaRef.current) {
-            textareaRef.current.style.height = 'auto';
-        }
 
         try {
+            setMessages(prev => [...prev, userMessage]);
+            setInput('');
+            setStreaming(true);
+            isStreamingRef.current = true;
+            streamingQueueRef.current = []; // Clear queue
+
+            if (textareaRef.current) {
+                textareaRef.current.style.height = 'auto';
+            }
+
             // Add placeholder for assistant message
             setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
 
@@ -168,9 +239,14 @@ const ChatWindow = ({ conversationId, onConversationCreated }) => {
 
             // 1. Create chat if needed
             if (!currentConversationId) {
+                console.log("Creating new conversation...");
                 const res = await window.api.invoke('api-call', 'chat/new', { title: "New Chat" }, 'POST');
                 if (res && res.id) {
                     currentConversationId = res.id;
+                    console.log("Created conversation:", currentConversationId);
+                    // CRITICAL: Set this BEFORE calling onConversationCreated to prevent race condition
+                    // where the useEffect calls loadMessages and wipes out the streaming messages
+                    justCreatedConversationIdRef.current = currentConversationId;
                     onConversationCreated(currentConversationId);
                 } else {
                     throw new Error("Failed to create new chat");
@@ -179,6 +255,7 @@ const ChatWindow = ({ conversationId, onConversationCreated }) => {
 
             // 2. Upload pending files if any
             if (pendingFiles.length > 0) {
+                console.log("Uploading pending files:", pendingFiles.length);
                 for (const file of pendingFiles) {
                     const formData = new FormData();
                     formData.append('file', file);
@@ -199,6 +276,7 @@ const ChatWindow = ({ conversationId, onConversationCreated }) => {
             }
 
             // 3. Send message
+            console.log("Starting stream...");
             const response = await fetch('http://localhost:8000/chat/stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -218,12 +296,8 @@ const ChatWindow = ({ conversationId, onConversationCreated }) => {
 
             if (!response.body) throw new Error('No response body');
 
-            // ... (rest of streaming logic)
-
             const newConversationId = response.headers.get('X-Conversation-ID');
-            if (newConversationId && newConversationId !== conversationId) {
-                onConversationCreated(newConversationId);
-            }
+            console.log("Stream started, conversation ID:", newConversationId);
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
@@ -231,7 +305,10 @@ const ChatWindow = ({ conversationId, onConversationCreated }) => {
 
             while (true) {
                 const { done, value } = await reader.read();
-                if (done) break;
+                if (done) {
+                    console.log("Stream done");
+                    break;
+                }
 
                 const chunk = decoder.decode(value, { stream: true });
                 buffer += chunk;
@@ -242,27 +319,46 @@ const ChatWindow = ({ conversationId, onConversationCreated }) => {
                 for (const line of lines) {
                     if (line.trim()) {
                         try {
+                            console.log("Processing chunk:", line);
                             const json = JSON.parse(line);
                             if (json.content) {
-                                // Push to queue instead of setting state directly
-                                // Split content into smaller chunks (chars) for smoother animation if needed
-                                // But pushing the whole token is usually fine if interval is fast
-                                // For very smooth typing, we can split by char
-                                const chars = json.content.split('');
-                                streamingQueueRef.current.push(...chars);
+                                // Directly append content to the assistant message
+                                setMessages(prev => {
+                                    const updated = [...prev];
+                                    const lastIndex = updated.length - 1;
+                                    const lastMsg = updated[lastIndex];
+                                    if (lastMsg && lastMsg.role === 'assistant') {
+                                        updated[lastIndex] = {
+                                            ...lastMsg,
+                                            content: lastMsg.content + json.content
+                                        };
+                                    }
+                                    return updated;
+                                });
+                            } else if (json.error) {
+                                console.error("Stream error from backend:", json.error);
                             }
                         } catch (e) {
-                            console.warn("Error parsing JSON chunk:", e);
+                            console.warn("Error parsing JSON chunk:", e, line);
                         }
                     }
                 }
             }
+
+            // Refresh sidebar to show the new conversation
+            if (onRefreshSidebar) {
+                console.log("Refreshing sidebar");
+                onRefreshSidebar();
+            }
+
+            console.log("=== handleSend COMPLETE ===");
         } catch (err) {
-            console.error("Streaming error:", err);
-            setMessages(prev => [...prev, { role: 'assistant', content: 'Error: Failed to get response.' }]);
+            console.error("=== handleSend ERROR ===", err);
+            setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${err.message || 'Failed to get response.'}` }]);
         } finally {
             setStreaming(false);
             isStreamingRef.current = false;
+            console.log("=== handleSend FINALLY ===");
         }
     };
 

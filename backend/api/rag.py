@@ -7,6 +7,12 @@ import uuid
 from typing import List
 import pypdf
 import shutil
+import warnings
+
+# Suppress pypdf cryptography deprecation warning
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="pypdf")
+from cryptography.utils import CryptographyDeprecationWarning
+warnings.filterwarnings("ignore", category=CryptographyDeprecationWarning)
 
 router = APIRouter(prefix="/rag", tags=["rag"])
 

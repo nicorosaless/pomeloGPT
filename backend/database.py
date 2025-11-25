@@ -12,10 +12,9 @@ def get_db_connection():
     return conn
 
 def init_db():
-    conn = get_db_connection()
-    cursor = conn.cursor()
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    
     c.execute('''
         CREATE TABLE IF NOT EXISTS conversations (
             id TEXT PRIMARY KEY,
@@ -23,6 +22,13 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    
+    # Check if updated_at exists in conversations
+    c.execute("PRAGMA table_info(conversations)")
+    columns = [info[1] for info in c.fetchall()]
+    if 'updated_at' not in columns:
+        c.execute('ALTER TABLE conversations ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
+
     c.execute('''
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
