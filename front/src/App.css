@@ -277,6 +277,41 @@ body {
   }
 }
 
+/* Loading Orb Animations */
+@keyframes gradientShift {
+
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+@keyframes float {
+
+  0%,
+  100% {
+    transform: translateY(0px);
+  }
+
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% center;
+  }
+
+  100% {
+    background-position: 200% center;
+  }
+}
+
 /* Edit Mode */
 .history-edit-container {
   display: flex;
@@ -522,17 +557,24 @@ body {
   color: var(--text-primary);
   padding: 0;
   /* Remove padding for assistant text to blend with background */
-  max-width: 100%;
+  max-width: 80%;
+  width: fit-content;
+  overflow-wrap: break-word;
+  word-wrap: break-word;
 }
 
 /* Typography & Spacing */
 .message-bubble p,
-.message-bubble li,
+.message-bubble li {
+  font-family: var(--font-sans);
+  margin-bottom: 0.8rem;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+
 .message-bubble span,
 .message-bubble div {
   font-family: var(--font-sans);
-  /* Enforce font */
-  margin-bottom: 1.2rem;
   line-height: 1.6;
   color: var(--text-primary);
 }
@@ -1693,4 +1735,60 @@ input:checked+.slider:before {
 .quant-details {
   font-size: 0.8rem;
   color: var(--text-secondary);
+}
+
+/* Markdown Content & Math Rendering */
+.markdown-content {
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  contain: layout style;
+}
+
+/* KaTeX Math Styling - Strict containment */
+.markdown-content .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+  margin: 0.5em 0;
+  text-align: center;
+}
+
+.markdown-content .katex {
+  font-size: 1em;
+  max-width: 100%;
+  display: inline-block;
+}
+
+/* Messages container – fills remaining space and scrolls */
+.messages-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--spacing-md);
+}
+
+/* KaTeX – ensure display math renders correctly */
+.markdown-content .katex-display .katex {
+  display: block;
+  margin: 0 auto;
+  max-width: 100%;
+  text-align: center;
+}
+
+/* KaTeX HTML – allow normal wrapping */
+.markdown-content .katex-html {
+  max-width: 100%;
+  white-space: normal;
+  overflow: visible;
+}
+
+/* Absolute containment for assistant messages */
+.message-wrapper.assistant .message-bubble .markdown-content {
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.message-wrapper.assistant .message-bubble .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
 }

@@ -7,6 +7,9 @@ import requests
 from typing import List, Dict, Optional
 from datetime import datetime
 import re
+from urllib.parse import urlparse, urlunparse, parse_qs
+import numpy as np
+from sentence_transformers import SentenceTransformer
 
 
 class SearXNGService:
@@ -20,6 +23,8 @@ class SearXNGService:
             base_url: Base URL of the SearXNG instance (default: http://localhost:8080)
         """
         self.base_url = base_url.rstrip('/')
+        # Initialize embedding model for semantic deduplication (lightweight & fast)
+        self._embedding_model = None  # Lazy load on first use
         
     def search(
         self, 
@@ -73,12 +78,20 @@ class SearXNGService:
             # Parse and normalize results
             normalized_results = self._parse_results(results)
             
-            # Deduplicate results
-            unique_results = self._deduplicate_results(normalized_results)
+            # Filter bad URLs (AMP, RSS, tracking)
+            filtered_results = self._filter_urls(normalized_results)
+            print(f"[SearXNG] Filtered to {len(filtered_results)} clean results")
+            
+            # Deduplicate results (fast embedding-based)
+            unique_results = self._deduplicate_results(filtered_results)
             print(f"[SearXNG] Deduplicated to {len(unique_results)} unique results")
             
+            # Ensure source diversity (max 2 per domain)
+            diverse_results = self._ensure_diversity(unique_results)
+            print(f"[SearXNG] Selected {len(diverse_results)} diverse sources")
+            
             # Limit to requested count
-            return unique_results[:count]
+            return diverse_results[:count]
             
         except requests.Timeout:
             print(f"[SearXNG] Timeout error")
@@ -123,57 +136,166 @@ class SearXNGService:
         if not text:
             return ""
             
-        # Remove common noise
+        # Remove common noise patterns
         text = re.sub(r'Read more\.\.\.', '', text)
+        text = re.sub(r'Click here.*', '', text, flags=re.IGNORECASE)
         text = re.sub(r'\.\.\.$', '', text)
+        text = re.sub(r'\s+-\s+\d{1,2}/\d{1,2}/\d{2,4}', '', text)  # Remove dates like "- 11/25/2025"
         
         # Remove multiple spaces
         text = re.sub(r'\s+', ' ', text).strip()
         
         return text
+    
+    def _filter_urls(self, results: List[Dict]) -> List[Dict]:
+        """Filter out unwanted URLs (AMP, RSS, tracking, etc.)"""
+        filtered = []
+        
+        for result in results:
+            url = result.get('url', '').lower()
+            
+            # Skip AMP URLs
+            if '/amp/' in url or '?amp=' in url or '.amp' in url or '/amp.' in url:
+                continue
+            
+            # Skip RSS/XML feeds
+            if url.endswith('.rss') or url.endswith('.xml') or '/rss/' in url or '/feed/' in url:
+                continue
+            
+            # Skip common tracking/redirect URLs
+            if 'tracking' in url or 'redirect' in url or 'goto' in url:
+                continue
+            
+            # Normalize URL (remove tracking params)
+            result['url'] = self._normalize_url(result['url'])
+            
+            filtered.append(result)
+        
+        return filtered
+    
+    def _normalize_url(self, url: str) -> str:
+        """Normalize URL by removing tracking parameters"""
+        try:
+            parsed = urlparse(url)
+            
+            # Parse query parameters
+            params = parse_qs(parsed.query)
+            
+            # Remove common tracking parameters
+            tracking_params = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term',
+                              'fbclid', 'gclid', 'msclkid', 'mc_cid', 'mc_eid']
+            
+            for param in tracking_params:
+                params.pop(param, None)
+            
+            # Rebuild query string
+            clean_query = '&'.join(f"{k}={v[0]}" for k, v in params.items())
+            
+            # Rebuild URL without tracking params
+            clean_url = urlunparse((
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path.rstrip('/'),  # Remove trailing slash
+                parsed.params,
+                clean_query,
+                ''  # Remove fragment
+            ))
+            
+            return clean_url
+        except:
+            return url
+    
+    def _normalize_title(self, title: str) -> str:
+        """Normalize title for comparison (lowercase, remove noise)"""
+        if not title:
+            return ""
+        
+        # Convert to lowercase
+        normalized = title.lower()
+        
+        # Remove common publisher suffixes
+        normalized = re.sub(r'\s*-\s*(cnn|bbc|reuters|bloomberg|forbes|techcrunch|the verge).*$', '', normalized, flags=re.IGNORECASE)
+        
+        # Remove date patterns
+        normalized = re.sub(r'\s*-\s*\d{1,2}/\d{1,2}/\d{2,4}', '', normalized)
+        normalized = re.sub(r'\s*\|\s*\d{1,2}\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)', '', normalized, flags=re.IGNORECASE)
+        
+        # Remove special characters
+        normalized = re.sub(r'[^\w\s]', ' ', normalized)
+        normalized = re.sub(r'\s+', ' ', normalized).strip()
+        
+        return normalized
 
-    def _deduplicate_results(self, results: List[Dict], threshold: float = 0.6) -> List[Dict]:
+    def _deduplicate_results(self, results: List[Dict], threshold: float = 0.75) -> List[Dict]:
         """
-        Deduplicate results based on content similarity
+        Deduplicate results based on semantic similarity using embeddings
         
         Args:
             results: List of normalized results
-            threshold: Jaccard similarity threshold (0.0 to 1.0)
+            threshold: Cosine similarity threshold (0.0 to 1.0), higher = more strict
             
         Returns:
             List of unique results
         """
+        if len(results) <= 1:
+            return results
+        
+        # Lazy load embedding model (only loaded once, then cached)
+        if self._embedding_model is None:
+            print("[SearXNG] Loading embedding model (one-time initialization)...")
+            self._embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+        
         unique = []
-        seen_texts = []
+        embeddings = []
         
         for result in results:
-            # Create a signature for comparison (title + summary)
-            text = (result['name'] + " " + result['summary']).lower()
+            # Create text for embedding (normalized title + summary)
+            title_norm = self._normalize_title(result['name'])
+            text = f"{title_norm} {result['summary']}"
             
+            # Generate embedding
+            embedding = self._embedding_model.encode(text, convert_to_numpy=True)
+            
+            # Check similarity with existing results
             is_duplicate = False
-            for seen_text in seen_texts:
-                if self._calculate_similarity(text, seen_text) > threshold:
+            for existing_emb in embeddings:
+                similarity = self._cosine_similarity(embedding, existing_emb)
+                if similarity > threshold:
                     is_duplicate = True
                     break
             
             if not is_duplicate:
                 unique.append(result)
-                seen_texts.append(text)
+                embeddings.append(embedding)
                 
         return unique
-
-    def _calculate_similarity(self, text1: str, text2: str) -> float:
-        """Calculate Jaccard similarity between two strings"""
-        set1 = set(text1.split())
-        set2 = set(text2.split())
+    
+    def _cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
+        """Calculate cosine similarity between two vectors"""
+        dot_product = np.dot(vec1, vec2)
+        norm_product = np.linalg.norm(vec1) * np.linalg.norm(vec2)
+        return dot_product / norm_product if norm_product > 0 else 0.0
+    
+    def _ensure_diversity(self, results: List[Dict], max_per_domain: int = 2) -> List[Dict]:
+        """Ensure source diversity by limiting results per domain"""
+        domain_counts = {}
+        diverse = []
         
-        if not set1 or not set2:
-            return 0.0
-            
-        intersection = len(set1.intersection(set2))
-        union = len(set1.union(set2))
+        for result in results:
+            try:
+                domain = urlparse(result['url']).netloc
+                # Remove 'www.' prefix for counting
+                domain = domain.replace('www.', '')
+                
+                count = domain_counts.get(domain, 0)
+                if count < max_per_domain:
+                    diverse.append(result)
+                    domain_counts[domain] = count + 1
+            except:
+                # If URL parsing fails, include the result
+                diverse.append(result)
         
-        return intersection / union
+        return diverse
     
     def score_by_freshness(
         self, 

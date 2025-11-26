@@ -4,7 +4,11 @@ import ModelSelector from './ModelSelector';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 import Toast from './Toast';
+import LoadingOrb from './LoadingOrb';
 
 const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar }) => {
     const [messages, setMessages] = useState([
@@ -15,6 +19,7 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
         return localStorage.getItem('web_search_enabled') === 'true';
     });
     const [streaming, setStreaming] = useState(false);
+    const [loadingMessage, setLoadingMessage] = useState('');
     const [toast, setToast] = useState(null); // { message, type }
 
     // Model State
@@ -30,10 +35,13 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
     const fileInputRef = useRef(null);
 
     const messagesEndRef = useRef(null);
+    const messagesContainerRef = useRef(null);
     const textareaRef = useRef(null);
     const isStreamingRef = useRef(false);
     const streamingQueueRef = useRef([]);
     const justCreatedConversationIdRef = useRef(null);
+    // Tracks desired scroll direction after messages update
+
 
     // Load history when conversationId changes
     useEffect(() => {
@@ -191,9 +199,8 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
         }
     };
 
-    const scrollToBottom = () => {
+    const scrollToBottom = () =>
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    };
 
     useEffect(() => {
         scrollToBottom();
@@ -220,6 +227,7 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
         console.log("Sending request with Web Search:", webSearchEnabled);
 
         const userMessage = { role: 'user', content: input };
+        let loadingInterval = null; // Declare outside try block for cleanup in finally
 
         try {
             setMessages(prev => [...prev, userMessage]);
@@ -228,12 +236,34 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
             isStreamingRef.current = true;
             streamingQueueRef.current = []; // Clear queue
 
+            // Scroll to bottom so the new user message is visible
+            setTimeout(() => {
+                scrollToBottom();
+            }, 0);
+
             if (textareaRef.current) {
                 textareaRef.current.style.height = 'auto';
             }
 
             // Add placeholder for assistant message
             setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+
+            // Start loading messages if web search is enabled
+            if (webSearchEnabled) {
+                const messages = [
+                    'Buscando en la web...',
+                    'Filtrando resultados...',
+                    'Analizando fuentes...',
+                    'Sintetizando información...'
+                ];
+                let msgIndex = 0;
+                setLoadingMessage(messages[0]);
+
+                loadingInterval = setInterval(() => {
+                    msgIndex = (msgIndex + 1) % messages.length;
+                    setLoadingMessage(messages[msgIndex]);
+                }, 1500); // Change message every 1.5 seconds
+            }
 
             let currentConversationId = conversationId;
 
@@ -302,6 +332,7 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
+            let hasStartedStreaming = false;
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -322,6 +353,16 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
                             console.log("Processing chunk:", line);
                             const json = JSON.parse(line);
                             if (json.content) {
+                                // Clear loading message once we start receiving content
+                                if (!hasStartedStreaming) {
+                                    if (loadingInterval) {
+                                        clearInterval(loadingInterval);
+                                        loadingInterval = null;
+                                    }
+                                    setLoadingMessage('');
+                                    hasStartedStreaming = true;
+                                }
+
                                 // Directly append content to the assistant message
                                 setMessages(prev => {
                                     const updated = [...prev];
@@ -356,6 +397,11 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
             console.error("=== handleSend ERROR ===", err);
             setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${err.message || 'Failed to get response.'}` }]);
         } finally {
+            // Clear loading interval if it's still running
+            if (loadingInterval) {
+                clearInterval(loadingInterval);
+            }
+            setLoadingMessage('');
             setStreaming(false);
             isStreamingRef.current = false;
             console.log("=== handleSend FINALLY ===");
@@ -399,36 +445,50 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
                     onClose={() => setToast(null)}
                 />
             )}
-            <div className="messages-container">
+            <div className="messages-container" ref={messagesContainerRef}>
                 {messages.map((msg, idx) => (
                     <div key={idx} className={`message-wrapper ${msg.role}`}>
                         <div className="message-bubble">
                             {msg.role === 'assistant' ? (
-                                <div className="markdown-content">
-                                    <ReactMarkdown
-                                        components={{
-                                            code({ node, inline, className, children, ...props }) {
-                                                const match = /language-(\w+)/.exec(className || '');
-                                                return !inline && match ? (
-                                                    <SyntaxHighlighter
-                                                        style={vscDarkPlus}
-                                                        language={match[1]}
-                                                        PreTag="div"
-                                                        {...props}
-                                                    >
-                                                        {String(children).replace(/\n$/, '')}
-                                                    </SyntaxHighlighter>
-                                                ) : (
-                                                    <code className={className} {...props}>
-                                                        {children}
-                                                    </code>
-                                                );
-                                            }
-                                        }}
-                                    >
-                                        {cleanContent(msg.content)}
-                                    </ReactMarkdown>
-                                </div>
+                                <>
+                                    {/* Show loading orb if this is the last message, it's empty, and we're streaming */}
+                                    {streaming && idx === messages.length - 1 && !msg.content && (
+                                        <LoadingOrb
+                                            showProgress={webSearchEnabled}
+                                            progressMessage={loadingMessage}
+                                        />
+                                    )}
+                                    {/* Always show markdown content, even during streaming */}
+                                    {msg.content && (
+                                        <div className="markdown-content">
+                                            <ReactMarkdown
+                                                remarkPlugins={[remarkMath]}
+                                                rehypePlugins={[rehypeKatex]}
+                                                components={{
+                                                    code({ node, inline, className, children, ...props }) {
+                                                        const match = /language-(\w+)/.exec(className || '');
+                                                        return !inline && match ? (
+                                                            <SyntaxHighlighter
+                                                                style={vscDarkPlus}
+                                                                language={match[1]}
+                                                                PreTag="div"
+                                                                {...props}
+                                                            >
+                                                                {String(children).replace(/\n$/, '')}
+                                                            </SyntaxHighlighter>
+                                                        ) : (
+                                                            <code className={className} {...props}>
+                                                                {children}
+                                                            </code>
+                                                        );
+                                                    }
+                                                }}
+                                            >
+                                                {cleanContent(msg.content)}
+                                            </ReactMarkdown>
+                                        </div>
+                                    )}
+                                </>
                             ) : (
                                 <p>{msg.content}</p>
                             )}
