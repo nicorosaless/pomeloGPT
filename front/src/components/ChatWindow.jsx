@@ -40,6 +40,9 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
     const isStreamingRef = useRef(false);
     const streamingQueueRef = useRef([]);
     const justCreatedConversationIdRef = useRef(null);
+    const lastUserMessageRef = useRef(null);
+    const shouldScrollToUserRef = useRef(false);
+    const shouldScrollToBottomRef = useRef(true);
     // Tracks desired scroll direction after messages update
 
 
@@ -118,6 +121,7 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
         try {
             const res = await window.api.invoke('api-call', `chat/${id}`, {}, 'GET');
             if (res.messages) {
+                shouldScrollToBottomRef.current = true;
                 setMessages(res.messages);
             }
         } catch (err) {
@@ -200,10 +204,16 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
     };
 
     const scrollToBottom = () =>
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
 
     useEffect(() => {
-        scrollToBottom();
+        if (shouldScrollToUserRef.current && lastUserMessageRef.current) {
+            lastUserMessageRef.current.scrollIntoView({ behavior: 'auto', block: 'start' });
+            shouldScrollToUserRef.current = false;
+            shouldScrollToBottomRef.current = false;
+        } else if (shouldScrollToBottomRef.current) {
+            scrollToBottom();
+        }
     }, [messages, streaming]);
 
     // Process streaming queue - DISABLED (using direct updates)
@@ -230,16 +240,13 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
         let loadingInterval = null; // Declare outside try block for cleanup in finally
 
         try {
+            shouldScrollToUserRef.current = true;
+            shouldScrollToBottomRef.current = false;
             setMessages(prev => [...prev, userMessage]);
             setInput('');
             setStreaming(true);
             isStreamingRef.current = true;
             streamingQueueRef.current = []; // Clear queue
-
-            // Scroll to bottom so the new user message is visible
-            setTimeout(() => {
-                scrollToBottom();
-            }, 0);
 
             if (textareaRef.current) {
                 textareaRef.current.style.height = 'auto';
@@ -250,19 +257,7 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
 
             // Start loading messages if web search is enabled
             if (webSearchEnabled) {
-                const messages = [
-                    'Buscando en la web...',
-                    'Filtrando resultados...',
-                    'Analizando fuentes...',
-                    'Sintetizando información...'
-                ];
-                let msgIndex = 0;
-                setLoadingMessage(messages[0]);
-
-                loadingInterval = setInterval(() => {
-                    msgIndex = (msgIndex + 1) % messages.length;
-                    setLoadingMessage(messages[msgIndex]);
-                }, 1500); // Change message every 1.5 seconds
+                setLoadingMessage('Iniciando...');
             }
 
             let currentConversationId = conversationId;
@@ -352,13 +347,13 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
                         try {
                             console.log("Processing chunk:", line);
                             const json = JSON.parse(line);
-                            if (json.content) {
+
+                            if (json.status !== undefined) {
+                                // Update loading message with status from backend
+                                setLoadingMessage(json.status);
+                            } else if (json.content) {
                                 // Clear loading message once we start receiving content
                                 if (!hasStartedStreaming) {
-                                    if (loadingInterval) {
-                                        clearInterval(loadingInterval);
-                                        loadingInterval = null;
-                                    }
                                     setLoadingMessage('');
                                     hasStartedStreaming = true;
                                 }
@@ -436,6 +431,8 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
         return content;
     };
 
+    const lastUserIndex = messages.map(m => m.role).lastIndexOf('user');
+
     return (
         <div className="chat-window">
             {toast && (
@@ -447,7 +444,11 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
             )}
             <div className="messages-container" ref={messagesContainerRef}>
                 {messages.map((msg, idx) => (
-                    <div key={idx} className={`message-wrapper ${msg.role}`}>
+                    <div
+                        key={idx}
+                        className={`message-wrapper ${msg.role}`}
+                        ref={idx === lastUserIndex ? lastUserMessageRef : null}
+                    >
                         <div className="message-bubble">
                             {msg.role === 'assistant' ? (
                                 <>

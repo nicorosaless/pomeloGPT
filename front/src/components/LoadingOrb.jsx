@@ -15,9 +15,9 @@ const LoadingOrb = ({ showProgress = false, progressMessage = '' }) => {
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '8px 0' }}>
             {/* Animated Orb - alternates between circle and rounded square */}
             <div style={{
-                width: '20px',
-                height: '20px',
-                background: 'linear-gradient(135deg, #3b82f6 0%, #8b5cf6 50%, #3b82f6 100%)',
+                width: '16px',
+                height: '16px',
+                background: 'var(--primary-gradient)',
                 backgroundSize: '200% 200%',
                 animation: 'gradientShift 3s ease infinite',
                 borderRadius: isCircle ? '50%' : '30%',
@@ -30,12 +30,13 @@ const LoadingOrb = ({ showProgress = false, progressMessage = '' }) => {
                     fontSize: '0.875rem',
                     fontWeight: '500',
                     color: 'transparent',
-                    backgroundImage: 'linear-gradient(to right, #60a5fa, #c4b5fd, #60a5fa)',
+                    backgroundImage: 'var(--loading-text-gradient)',
                     backgroundSize: '200% auto',
                     backgroundClip: 'text',
                     WebkitBackgroundClip: 'text',
                     animation: 'shimmer 3s linear infinite',
-                    letterSpacing: '0.05em'
+                    letterSpacing: '0.05em',
+                    fontFamily: 'Inter, sans-serif'
                 }}>
                     {progressMessage}
                 </span>

@@ -119,7 +119,7 @@ A) URL mentioned earlier + user asks about it → {{"type": "url", "url": "URL"}
 B) No URL or different topic → {{"type": "search", "queries": ["query1", "query2"]}}
 
 QUERY RULES (if search):
-- User language: {user_lang}. Generate queries in the SAME language.
+- User language: Detect from conversation. Generate queries in the SAME language.
 - 1-3 specific keywords (not sentences)
 - Add year/"latest" if relevant
 
@@ -171,12 +171,18 @@ async def chat_stream(request: ChatRequest):
         current_system_prompt = SYSTEM_PROMPT
         last_message = request.messages[-1]
 
-        # RAG Integration
-        if request.use_rag and last_message["role"] == "user":
-            context_chunks = rag.query_collection(last_message["content"], conversation_id=conversation_id)
-            if context_chunks:
-                context_str = "\n\n".join(context_chunks)
-                current_system_prompt += f"""
+        async def generate():
+            nonlocal current_system_prompt
+            # Yield initial status
+            yield json.dumps({"status": "Iniciando..."}) + "\n"
+
+            # RAG Integration
+            if request.use_rag and last_message["role"] == "user":
+                yield json.dumps({"status": "Consultando documentos..."}) + "\n"
+                context_chunks = rag.query_collection(last_message["content"], conversation_id=conversation_id)
+                if context_chunks:
+                    context_str = "\n\n".join(context_chunks)
+                    current_system_prompt += f"""
 
 Context information is below.
 ---------------------
@@ -185,95 +191,101 @@ Context information is below.
 Given the context information and not prior knowledge, answer the query.
 """
 
-        # SearXNG Web Search / URL Reading - LLM-driven decision
-        web_results = []
-        url_content = None
-        searxng_error_message = None
-        
-        if request.use_web_search and last_message["role"] == "user":
-            try:
-                from api.url_reader import read_url_content
-                
-                current_date = datetime.now().strftime("%B %d, %Y")
-                current_year = datetime.now().year
-                
-                # Step 1: Let LLM decide: read URL or web search?
-                decision = await generate_search_queries(request.messages, request.model)
-                
-                if decision["type"] == "url":
-                    # LLM decided to read a specific URL from context
-                    target_url = decision["url"]
-                    print(f"[Action] Reading URL: {target_url}")
+            # SearXNG Web Search / URL Reading - LLM-driven decision
+            web_results = []
+            url_content = None
+            searxng_error_message = None
+            
+            if request.use_web_search and last_message["role"] == "user":
+                try:
+                    yield json.dumps({"status": "Analizando intención..."}) + "\n"
+                    from api.url_reader import read_url_content
                     
-                    url_content = await read_url_content(target_url)
-                    print(f"[URL Reader] Read {len(url_content)} characters from {target_url}")
+                    current_date = datetime.now().strftime("%B %d, %Y")
+                    current_year = datetime.now().year
                     
-                elif decision["type"] == "search":
-                    # LLM decided to perform web search
-                    optimized_queries = decision["queries"]
-                    print(f"[Action] Web search with {len(optimized_queries)} queries")
+                    # Step 1: Let LLM decide: read URL or web search?
+                    decision = await generate_search_queries(request.messages, request.model)
                     
-                    # Initialize SearXNG service
-                    searxng = SearXNGService(base_url=request.searxng_url)
-                    
-                    # Quick health check
-                    if not searxng.health_check():
-                        print(f"[Web Search] SearXNG is not available at {request.searxng_url}")
-                        searxng_error_message = "Web search is currently unavailable. SearXNG service is not running."
-                    else:
-                        print(f"[Web Search] Using SearXNG at {request.searxng_url}")
+                    if decision["type"] == "url":
+                        # LLM decided to read a specific URL from context
+                        target_url = decision["url"]
+                        yield json.dumps({"status": f"Leyendo URL: {target_url}..."}) + "\n"
+                        print(f"[Action] Reading URL: {target_url}")
                         
-                        # Perform searches for each optimized query
-                        all_results = []
-                        seen_urls = set()
+                        url_content = await read_url_content(target_url)
+                        print(f"[URL Reader] Read {len(url_content)} characters from {target_url}")
                         
-                        for query_idx, search_query in enumerate(optimized_queries, 1):
-                            # Don't add date to query - let time_range handle freshness
-                            print(f"[Web Search] Query #{query_idx}: {search_query}")
-                            
-                            # Perform search with time_range='year' for better quality results
-                            # 'day' is too restrictive for evergreen content like books/tutorials
-                            query_results = searxng.search(
-                                query=search_query,
-                                count=15,  # Reduced per query since we're doing multiple queries
-                                time_range="year",  # Changed from 'day' to 'year'
-                                timeout=15
-                            )
-                            
-                            # Deduplicate by URL across all queries
-                            for result in query_results:
-                                url = result.get('url')
-                                if url and url not in seen_urls:
-                                    seen_urls.add(url)
-                                    all_results.append(result)
-                            
-                            print(f"[Web Search]   Found {len(query_results)} results for query #{query_idx}")
+                    elif decision["type"] == "search":
+                        # LLM decided to perform web search
+                        optimized_queries = decision["queries"]
+                        yield json.dumps({"status": f"Buscando: {optimized_queries[0]}..."}) + "\n"
+                        print(f"[Action] Web search with {len(optimized_queries)} queries")
                         
-                        if all_results:
-                            # Score results by freshness
-                            scored_results = searxng.score_by_freshness(
-                                all_results, 
-                                current_date, 
-                                current_year
-                            )
-                            
-                            # Take top 8 results after scoring, filtering, and deduplication
-                            web_results = [r for _, r in scored_results[:8]]
-                            
-                            print(f"[Web Search] Total unique results: {len(all_results)}, selected top {len(web_results)} by freshness")
-                            for idx, (score, result) in enumerate(scored_results[:8]):
-                                print(f"  #{idx+1} (score={score}): {result.get('name', 'No title')[:60]}")
+                        # Initialize SearXNG service
+                        searxng = SearXNGService(base_url=request.searxng_url)
+                        
+                        # Quick health check
+                        if not await searxng.health_check():
+                            print(f"[Web Search] SearXNG is not available at {request.searxng_url}")
+                            searxng_error_message = "Web search is currently unavailable. SearXNG service is not running."
                         else:
-                            print(f"[Web Search] No results found across all queries")
-                    
-            except Exception as e:
-                print(f"[Web Search] Error: {e}")
-                searxng_error_message = f"Web search encountered an error: {str(e)}"
+                            print(f"[Web Search] Using SearXNG at {request.searxng_url}")
+                            
+                            # Perform searches for each optimized query
+                            all_results = []
+                            seen_urls = set()
+                            
+                            for query_idx, search_query in enumerate(optimized_queries, 1):
+                                yield json.dumps({"status": f"Buscando: {search_query}..."}) + "\n"
+                                # Don't add date to query - let time_range handle freshness
+                                print(f"[Web Search] Query #{query_idx}: {search_query}")
+                                
+                                # Perform search with time_range='year' for better quality results
+                                # 'day' is too restrictive for evergreen content like books/tutorials
+                                query_results = await searxng.search(
+                                    query=search_query,
+                                    count=15,  # Reduced per query since we're doing multiple queries
+                                    time_range="year",  # Changed from 'day' to 'year'
+                                    timeout=15
+                                )
+                                
+                                # Deduplicate by URL across all queries
+                                for result in query_results:
+                                    url = result.get('url')
+                                    if url and url not in seen_urls:
+                                        seen_urls.add(url)
+                                        all_results.append(result)
+                                
+                                print(f"[Web Search]   Found {len(query_results)} results for query #{query_idx}")
+                            
+                            if all_results:
+                                yield json.dumps({"status": "Filtrando y clasificando resultados..."}) + "\n"
+                                # Score results by freshness
+                                scored_results = searxng.score_by_freshness(
+                                    all_results, 
+                                    current_date, 
+                                    current_year
+                                )
+                                
+                                # Take top 8 results after scoring, filtering, and deduplication
+                                web_results = [r for _, r in scored_results[:8]]
+                                
+                                print(f"[Web Search] Total unique results: {len(all_results)}, selected top {len(web_results)} by freshness")
+                                for idx, (score, result) in enumerate(scored_results[:8]):
+                                    print(f"  #{idx+1} (score={score}): {result.get('name', 'No title')[:60]}")
+                            else:
+                                print(f"[Web Search] No results found across all queries")
+                        
+                except Exception as e:
+                    print(f"[Web Search] Error: {e}")
+                    searxng_error_message = f"Web search encountered an error: {str(e)}"
 
-        # Build context for LLM
-        if url_content:
-            # URL was read directly
-            current_system_prompt += f"""
+            # Build context for LLM
+            yield json.dumps({"status": "Sintetizando respuesta..."}) + "\n"
+            if url_content:
+                # URL was read directly
+                current_system_prompt += f"""
 
 URL CONTENT:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -282,54 +294,54 @@ URL CONTENT:
 
 Use the above URL content to answer the user's question accurately.
 """
-        elif web_results:
-            # Check if ANY result has a valid datePublished
-            has_dates = any(result.get('datePublished') for result in web_results)
-            
-            # Format results and log what we're sending
-            search_context = ""
-            for idx, item in enumerate(web_results, 1):
-                title = item.get('name') if item.get('name') is not None else 'Untitled'
-                url = item.get('url') if item.get('url') is not None else ''
-                summary = item.get('summary') if item.get('summary') is not None else 'No summary available'
-                date_pub = item.get('datePublished') if item.get('datePublished') is not None else 'Unknown'
+            elif web_results:
+                # Check if ANY result has a valid datePublished
+                has_dates = any(result.get('datePublished') for result in web_results)
                 
-                # Debug: log the actual summary content
-                print(f"[Web Search] Result #{idx} summary: {summary[:200]}...")
+                # Format results and log what we're sending
+                search_context = ""
+                for idx, item in enumerate(web_results, 1):
+                    title = item.get('name') if item.get('name') is not None else 'Untitled'
+                    url = item.get('url') if item.get('url') is not None else ''
+                    summary = item.get('summary') if item.get('summary') is not None else 'No summary available'
+                    date_pub = item.get('datePublished') if item.get('datePublished') is not None else 'Unknown'
+                    
+                    # Debug: log the actual summary content
+                    print(f"[Web Search] Result #{idx} summary: {summary[:200]}...")
+                    
+                    search_context += f"\nSOURCE {idx}:\n"
+                    search_context += f"Title: {title}\n"
+                    search_context += f"URL: {url}\n"
+                    search_context += f"Date: {date_pub}\n"
+                    search_context += f"Content: {summary}\n"
                 
-                search_context += f"\nSOURCE {idx}:\n"
-                search_context += f"Title: {title}\n"
-                search_context += f"URL: {url}\n"
-                search_context += f"Date: {date_pub}\n"
-                search_context += f"Content: {summary}\n"
-            
-            
-            current_system_prompt += f"""
+                current_system_prompt += f"""
 
 WEB RESULTS:
 {search_context}
 
 Answer using above info. Cite sources: [Name](URL). If no answer, say so.
 """
-        elif request.use_web_search and searxng_error_message:
-            # Web search was requested but SearXNG is not available
-            current_system_prompt += f"""
+            elif request.use_web_search and searxng_error_message:
+                # Web search was requested but SearXNG is not available
+                current_system_prompt += f"""
 
 [Web search unavailable: {searxng_error_message}
 Inform the user and answer using general knowledge. Mention information may not be current.]
 """
-        elif request.use_web_search:
-            current_system_prompt += f"""
+            elif request.use_web_search:
+                current_system_prompt += f"""
 
 [No web results found. Inform the user. DO NOT use training data (2023 cutoff). Today: {datetime.now().strftime('%B %d, %Y')}]
 """
 
-        ollama_messages = [{"role": "system", "content": current_system_prompt}] + request.messages
+            ollama_messages = [{"role": "system", "content": current_system_prompt}] + request.messages
 
-        async def generate():
             full_response = ""
             client = ollama.AsyncClient()
             try:
+                # Clear status before streaming content
+                # yield json.dumps({"status": ""}) + "\n"
                 async for chunk in await client.chat(model=request.model, messages=ollama_messages, stream=True):
                     if "message" in chunk and "content" in chunk["message"]:
                         content = chunk["message"]["content"]

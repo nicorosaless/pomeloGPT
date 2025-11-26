@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import ErrorBoundary from './components/ErrorBoundary';
 import Sidebar from './components/Sidebar';
 import ChatWindow from './components/ChatWindow';
@@ -14,6 +14,20 @@ function App() {
     const [sidebarVisible, setSidebarVisible] = useState(true);
     const [activeConversationId, setActiveConversationId] = useState(null);
     const [sidebarRefreshTrigger, setSidebarRefreshTrigger] = useState(0);
+
+    // Theme State
+    const [theme, setTheme] = useState(() => {
+        return localStorage.getItem('theme') || 'dark';
+    });
+
+    useEffect(() => {
+        document.documentElement.setAttribute('data-theme', theme);
+        localStorage.setItem('theme', theme);
+    }, [theme]);
+
+    const toggleTheme = () => {
+        setTheme(prev => prev === 'dark' ? 'light' : 'dark');
+    };
 
     return (
         <ErrorBoundary>
@@ -39,6 +53,8 @@ function App() {
                                 setActiveMode('chat');
                             }}
                             refreshTrigger={sidebarRefreshTrigger}
+                            theme={theme}
+                            onToggleTheme={toggleTheme}
                         />
                     )}
 

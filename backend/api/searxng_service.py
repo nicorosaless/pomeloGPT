@@ -3,7 +3,8 @@ SearXNG Service Wrapper
 Handles all interactions with the SearXNG search API
 """
 
-import requests
+import aiohttp
+import asyncio
 from typing import List, Dict, Optional
 from datetime import datetime
 import re
@@ -26,7 +27,7 @@ class SearXNGService:
         # Initialize embedding model for semantic deduplication (lightweight & fast)
         self._embedding_model = None  # Lazy load on first use
         
-    def search(
+    async def search(
         self, 
         query: str, 
         count: int = 10, 
@@ -60,18 +61,24 @@ class SearXNGService:
             print(f"[SearXNG] Searching: {query} (time_range={time_range})")
             
             # Make request to SearXNG
-            response = requests.get(
-                f"{self.base_url}/search",
-                params=params,
-                timeout=timeout
-            )
-            
-            if response.status_code != 200:
-                print(f"[SearXNG] Error: {response.status_code} - {response.text}")
-                return []
-            
-            data = response.json()
-            results = data.get('results', [])
+            async with aiohttp.ClientSession() as session:
+                try:
+                    async with session.get(
+                        f"{self.base_url}/search",
+                        params=params,
+                        timeout=aiohttp.ClientTimeout(total=timeout)
+                    ) as response:
+                        
+                        if response.status != 200:
+                            text = await response.text()
+                            print(f"[SearXNG] Error: {response.status} - {text}")
+                            return []
+                        
+                        data = await response.json()
+                        results = data.get('results', [])
+                except asyncio.TimeoutError:
+                    print(f"[SearXNG] Timeout error")
+                    return []
             
             print(f"[SearXNG] Found {len(results)} raw results")
             
@@ -93,9 +100,6 @@ class SearXNGService:
             # Limit to requested count
             return diverse_results[:count]
             
-        except requests.Timeout:
-            print(f"[SearXNG] Timeout error")
-            return []
         except Exception as e:
             print(f"[SearXNG] Error: {e}")
             return []
@@ -350,7 +354,7 @@ class SearXNGService:
         
         return scored_results
     
-    def health_check(self) -> bool:
+    async def health_check(self) -> bool:
         """
         Check if SearXNG instance is healthy and responsive
         
@@ -358,56 +362,61 @@ class SearXNGService:
             True if healthy, False otherwise
         """
         try:
-            response = requests.get(
-                f"{self.base_url}/healthz",
-                timeout=5
-            )
-            return response.status_code == 200
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.base_url}/healthz",
+                    timeout=5
+                ) as response:
+                    return response.status == 200
         except:
             # Try alternative - just a simple search request
             try:
-                response = requests.get(
-                    f"{self.base_url}/search",
-                    params={'q': 'test', 'format': 'json'},
-                    timeout=5
-                )
-                return response.status_code == 200
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        f"{self.base_url}/search",
+                        params={'q': 'test', 'format': 'json'},
+                        timeout=5
+                    ) as response:
+                        return response.status == 200
             except:
                 return False
 
 
 # Standalone test
 if __name__ == "__main__":
-    service = SearXNGService()
-    
-    # Health check
-    print("Testing SearXNG health...")
-    if service.health_check():
-        print("✓ SearXNG is healthy")
-    else:
-        print("✗ SearXNG is not responding")
-        exit(1)
-    
-    # Test search
-    print("\nTesting search...")
-    results = service.search("Python programming", count=5, time_range="week")
-    
-    if results:
-        print(f"\n✓ Found {len(results)} results:")
-        for i, result in enumerate(results, 1):
-            print(f"\n{i}. {result['name']}")
-            print(f"   URL: {result['url']}")
-            print(f"   Engine: {result['engine']}")
-            print(f"   Summary: {result['summary'][:100]}...")
-    else:
-        print("✗ No results found")
-    
-    # Test freshness scoring
-    print("\n\nTesting freshness scoring...")
-    current_date = datetime.now().strftime("%B %d, %Y")
-    current_year = datetime.now().year
-    
-    scored = service.score_by_freshness(results, current_date, current_year)
-    print(f"\nScored results:")
-    for score, result in scored:
-        print(f"  Score {score}: {result['name'][:60]}")
+    async def test():
+        service = SearXNGService()
+        
+        # Health check
+        print("Testing SearXNG health...")
+        if await service.health_check():
+            print("✓ SearXNG is healthy")
+        else:
+            print("✗ SearXNG is not responding")
+            exit(1)
+        
+        # Test search
+        print("\nTesting search...")
+        results = await service.search("Python programming", count=5, time_range="week")
+        
+        if results:
+            print(f"\n✓ Found {len(results)} results:")
+            for i, result in enumerate(results, 1):
+                print(f"\n{i}. {result['name']}")
+                print(f"   URL: {result['url']}")
+                print(f"   Engine: {result['engine']}")
+                print(f"   Summary: {result['summary'][:100]}...")
+        else:
+            print("✗ No results found")
+        
+        # Test freshness scoring
+        print("\n\nTesting freshness scoring...")
+        current_date = datetime.now().strftime("%B %d, %Y")
+        current_year = datetime.now().year
+        
+        scored = service.score_by_freshness(results, current_date, current_year)
+        print(f"\nScored results:")
+        for score, result in scored:
+            print(f"  Score {score}: {result['name'][:60]}")
+
+    asyncio.run(test())

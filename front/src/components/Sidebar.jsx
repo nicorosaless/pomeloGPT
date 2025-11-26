@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { MessageSquare, Plus, PanelLeftClose, Bot, Pencil, Trash2, Check, X, Settings } from 'lucide-react';
+import { MessageSquare, Plus, PanelLeftClose, Bot, Pencil, Trash2, Check, X, Settings, Sun, Moon } from 'lucide-react';
 
-const Sidebar = ({ activeMode, onSetMode, onToggleSidebar, activeConversationId, onSelectChat, refreshTrigger }) => {
+const Sidebar = ({ activeMode, onSetMode, onToggleSidebar, activeConversationId, onSelectChat, refreshTrigger, theme, onToggleTheme }) => {
     const [conversations, setConversations] = useState([]);
     const [loading, setLoading] = useState(true);
     const [editingId, setEditingId] = useState(null);
@@ -174,13 +174,21 @@ const Sidebar = ({ activeMode, onSetMode, onToggleSidebar, activeConversationId,
                 )}
             </div>
 
-            <div className="sidebar-footer">
+            <div className="sidebar-footer" style={{ justifyContent: 'space-between', paddingRight: '12px' }}>
                 <button
                     className="sidebar-item settings-icon-only"
                     onClick={() => onSetMode('settings')}
                     title="Settings"
                 >
                     <Settings size={20} />
+                </button>
+
+                <button
+                    className="sidebar-item settings-icon-only"
+                    onClick={onToggleTheme}
+                    title={theme === 'dark' ? "Switch to Light Mode" : "Switch to Dark Mode"}
+                >
+                    {theme === 'dark' ? <Sun size={20} /> : <Moon size={20} />}
                 </button>
             </div>
         </div>
