@@ -126,7 +126,8 @@ AVAILABLE_MODELS = [
 async def list_installed_models():
     print("Fetching installed models from Ollama...")
     try:
-        response = ollama.list()
+        client = ollama.AsyncClient()
+        response = await client.list()
         print(f"Ollama response: {response}")
         # response['models'] is a list of dicts
         return response
@@ -141,7 +142,8 @@ async def list_available_models():
 @router.get("/{name}/info")
 async def get_model_info(name: str):
     try:
-        response = ollama.show(name)
+        client = ollama.AsyncClient()
+        response = await client.show(name)
         return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -162,7 +164,8 @@ async def pull_model(request: PullModelRequest):
         
         # For now, just trigger it and return. It will block until done.
         # In a real app, use BackgroundTasks.
-        ollama.pull(model_name)
+        client = ollama.AsyncClient()
+        await client.pull(model_name)
         
         return {"status": "success", "message": f"Pulled {model_name}"}
     except Exception as e:
@@ -171,7 +174,8 @@ async def pull_model(request: PullModelRequest):
 @router.delete("/{name}")
 async def delete_model(name: str):
     try:
-        ollama.delete(name)
+        client = ollama.AsyncClient()
+        await client.delete(name)
         return {"status": "success", "message": f"Deleted {name}"}
     except Exception as e:
         # Ollama might return 404 if not found, handle gracefully?
