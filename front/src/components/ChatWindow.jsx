@@ -29,8 +29,8 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
 
     // RAG State
     const [attachments, setAttachments] = useState([]);
-    const [pendingFiles, setPendingFiles] = useState([]); // Files waiting to be uploaded (for new chats)
     const [uploading, setUploading] = useState(false);
+    const [uploadProgress, setUploadProgress] = useState({ progress: 0, message: '' }); // Local state for inline progress
     const [showAttachments, setShowAttachments] = useState(false);
     const fileInputRef = useRef(null);
 
@@ -62,7 +62,6 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
                     loadMessages(conversationId);
                     fetchAttachments(conversationId);
                 }
-                setPendingFiles([]); // Clear pending files when switching to an existing chat
             } else {
                 // Reset for new chat
                 console.log("Resetting for new chat");
@@ -70,7 +69,6 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
                     { role: 'assistant', content: 'Welcome to PomeloGPT. How can I help you today?' }
                 ]);
                 setAttachments([]);
-                setPendingFiles([]);
             }
         } catch (error) {
             console.error("Error in conversationId useEffect:", error);
@@ -147,20 +145,51 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
         const file = e.target.files[0];
         if (!file) return;
 
-        // If we are in a new chat (no ID), just add to pending files
-        if (!conversationId) {
-            setPendingFiles(prev => [...prev, file]);
-            setToast({ message: `The file "${file.name}" has been added (pending)`, type: 'info' });
-            if (fileInputRef.current) fileInputRef.current.value = '';
-            return;
+        // If we are in a new chat (no ID), create one first
+        let currentConversationId = conversationId;
+        if (!currentConversationId) {
+            try {
+                const res = await window.api.invoke('api-call', 'chat/new', { title: "New Chat" }, 'POST');
+                if (res && res.id) {
+                    currentConversationId = res.id;
+                    justCreatedConversationIdRef.current = currentConversationId;
+                    onConversationCreated(currentConversationId);
+                } else {
+                    throw new Error("Failed to create new chat");
+                }
+            } catch (err) {
+                console.error("Failed to create chat for upload", err);
+                setToast({ message: "Failed to initialize chat for upload", type: 'error' });
+                return;
+            }
         }
 
-        // If we have an ID, upload immediately
+        // Upload immediately
         setUploading(true);
+
+        // Start progress polling
+        const pollInterval = setInterval(async () => {
+            try {
+                const res = await fetch(`http://localhost:8000/rag/progress/${currentConversationId}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.status !== 'idle') {
+                        // Update local progress state instead of Toast
+                        setUploadProgress({
+                            progress: data.progress,
+                            message: data.message
+                        });
+                    }
+                }
+            } catch (e) {
+                console.warn("Progress poll failed", e);
+            }
+        }, 500);
+
         try {
             const formData = new FormData();
             formData.append('file', file);
-            formData.append('conversation_id', conversationId);
+            formData.append('conversation_id', currentConversationId);
 
             const res = await fetch('http://localhost:8000/rag/upload', {
                 method: 'POST',
@@ -172,13 +201,15 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
                 throw new Error(err.detail || "Upload failed");
             }
 
-            await fetchAttachments(conversationId);
-            setToast({ message: `The file "${file.name}" has been added`, type: 'success' });
+            await fetchAttachments(currentConversationId);
+            setToast({ message: "Document ready to analyze", type: 'success' });
         } catch (err) {
             console.error("Upload failed", err);
             setToast({ message: `Upload failed: ${err.message}`, type: 'error' });
         } finally {
+            clearInterval(pollInterval);
             setUploading(false);
+            setUploadProgress({ progress: 0, message: '' }); // Reset progress
             if (fileInputRef.current) fileInputRef.current.value = '';
         }
     };
@@ -279,26 +310,7 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
             }
 
             // 2. Upload pending files if any
-            if (pendingFiles.length > 0) {
-                console.log("Uploading pending files:", pendingFiles.length);
-                for (const file of pendingFiles) {
-                    const formData = new FormData();
-                    formData.append('file', file);
-                    formData.append('conversation_id', currentConversationId);
-
-                    await fetch('http://localhost:8000/rag/upload', {
-                        method: 'POST',
-                        body: formData
-                    });
-
-                    // Show success toast for each uploaded file
-                    setToast({ message: `"${file.name}" ready for RAG`, type: 'success' });
-                }
-                // Clear pending files as they are now uploaded
-                setPendingFiles([]);
-                // Fetch attachments to update UI
-                await fetchAttachments(currentConversationId);
-            }
+            // (Pending files logic removed as we upload immediately now)
 
             // 3. Send message
             console.log("Starting stream...");
@@ -313,7 +325,7 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
                     ].map(m => ({ role: m.role, content: m.content })),
                     conversation_id: currentConversationId,
                     stream: true,
-                    use_rag: attachments.length > 0 || pendingFiles.length > 0, // Use RAG if we have existing OR pending files
+                    use_rag: attachments.length > 0, // Use RAG if we have existing files
                     use_web_search: webSearchEnabled,
                     searxng_url: "http://localhost:8080"
                 })
@@ -439,6 +451,7 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
                 <Toast
                     message={toast.message}
                     type={toast.type}
+                    progress={toast.progress}
                     onClose={() => setToast(null)}
                 />
             )}
@@ -512,7 +525,7 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
                         onMouseEnter={() => setShowAttachments(true)}
                         onMouseLeave={() => setShowAttachments(false)}
                     >
-                        {showAttachments && (attachments.length > 0 || pendingFiles.length > 0) && (
+                        {showAttachments && (attachments.length > 0) && (
                             <div className="attachments-popover">
                                 {attachments.map((doc, idx) => (
                                     <div key={`existing-${idx}`} className="attachment-item">
@@ -531,27 +544,10 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
                                         </button>
                                     </div>
                                 ))}
-                                {pendingFiles.map((file, idx) => (
-                                    <div key={`pending-${idx}`} className="attachment-item pending">
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontStyle: 'italic', opacity: 0.8 }}>
-                                            <FileText size={14} />
-                                            <span>{file.name} (pending)</span>
-                                        </div>
-                                        <button
-                                            className="remove-attachment-btn"
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                handleDeleteAttachment(file.name, true);
-                                            }}
-                                        >
-                                            <X size={12} />
-                                        </button>
-                                    </div>
-                                ))}
                             </div>
                         )}
                         <button
-                            className={`control-btn ${attachments.length > 0 || pendingFiles.length > 0 ? 'has-attachments' : ''}`}
+                            className={`control-btn ${attachments.length > 0 ? 'has-attachments' : ''}`}
                             title="Upload Document"
                             onClick={() => fileInputRef.current?.click()}
                             disabled={uploading}
@@ -559,13 +555,7 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
                             <Paperclip size={18} />
                         </button>
                     </div>
-                    <input
-                        type="file"
-                        ref={fileInputRef}
-                        style={{ display: 'none' }}
-                        onChange={handleUpload}
-                        accept=".pdf,.txt"
-                    />
+
                     <button
                         className={`control-btn ${webSearchEnabled ? 'active' : ''}`}
                         onClick={() => {
@@ -577,7 +567,27 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
                     >
                         <Globe size={18} />
                     </button>
+
+                    {/* Inline Upload Progress */}
+                    {uploading && (
+                        <div className="upload-status-pill">
+                            <div className="upload-spinner"></div>
+                            <span className="upload-text">
+                                {uploadProgress.message || "Uploading..."}
+                                <span className="upload-percent">{uploadProgress.progress}%</span>
+                            </span>
+                        </div>
+                    )}
                 </div>
+
+                <input
+                    type="file"
+                    ref={fileInputRef}
+                    style={{ display: 'none' }}
+                    onChange={handleUpload}
+                    accept=".pdf,.txt"
+                />
+
                 <div className="input-wrapper">
                     <textarea
                         ref={textareaRef}
@@ -593,6 +603,8 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
                 </div>
             </div>
         </div>
+
+
     );
 };
 

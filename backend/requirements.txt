@@ -10,3 +10,11 @@ pypdf>=5.1.0
 beautifulsoup4
 lxml
 aiohttp
+torch
+transformers
+pillow
+flashrank
+einops
+timm
+pdf2image
+aiosqlite

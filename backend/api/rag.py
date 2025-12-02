@@ -7,12 +7,23 @@ import uuid
 from typing import List
 import pypdf
 import shutil
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import warnings
 
 # Suppress pypdf cryptography deprecation warning
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="pypdf")
 from cryptography.utils import CryptographyDeprecationWarning
 warnings.filterwarnings("ignore", category=CryptographyDeprecationWarning)
+
+# Import SOTA services
+try:
+    from .vision_service import extract_text_from_pdf_with_vision
+    from .rerank_service import rerank_documents
+except ImportError:
+    # Fallback for running directly or if dependencies missing
+    from api.vision_service import extract_text_from_pdf_with_vision
+    from api.rerank_service import rerank_documents
 
 router = APIRouter(prefix="/rag", tags=["rag"])
 
@@ -22,6 +33,10 @@ COLLECTION_NAME = "documents"
 UPLOAD_DIR = "./uploads"
 MAX_FILE_SIZE = 10 * 1024 * 1024 # 10 MB
 MAX_FILES_PER_CHAT = 5
+
+# Global progress tracker
+# Format: { "conversation_id": { "status": "processing", "progress": 0, "message": "..." } }
+upload_progress = {}
 
 # Ensure upload directory exists
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -59,6 +74,9 @@ async def upload_document(
     file: UploadFile = File(...),
     conversation_id: str = Form(...)
 ):
+    global upload_progress
+    upload_progress[conversation_id] = {"status": "starting", "progress": 0, "message": "Iniciando subida..."}
+    
     if not collection:
         raise HTTPException(status_code=500, detail="Vector database not initialized")
         
@@ -83,11 +101,31 @@ async def upload_document(
             raise HTTPException(status_code=400, detail=f"File too large. Limit is {MAX_FILE_SIZE/1024/1024}MB.")
             
         # Extract text
+        upload_progress[conversation_id] = {"status": "processing", "progress": 10, "message": "Leyendo archivo..."}
         text = ""
         if file.filename.lower().endswith(".pdf"):
-            reader = pypdf.PdfReader(file_path)
-            for page in reader.pages:
-                text += page.extract_text() + "\n"
+            # Use Florence-2 Vision Service for SOTA extraction
+            try:
+                def update_progress(current, total):
+                    percent = 10 + int((current / total) * 80) # 10% to 90%
+                    upload_progress[conversation_id] = {
+                        "status": "processing", 
+                        "progress": percent, 
+                        "message": f"Analizando página {current} de {total}..."
+                    }
+                
+                # Run blocking vision extraction in a thread pool
+                loop = asyncio.get_running_loop()
+                text = await loop.run_in_executor(
+                    None, 
+                    lambda: extract_text_from_pdf_with_vision(file_path, progress_callback=update_progress)
+                )
+            except Exception as e:
+                print(f"Vision extraction failed, falling back to pypdf: {e}")
+                upload_progress[conversation_id] = {"status": "processing", "progress": 50, "message": "Vision falló, usando modo rápido..."}
+                reader = pypdf.PdfReader(file_path)
+                for page in reader.pages:
+                    text += page.extract_text() + "\n"
         else:
             # Assume text file
             with open(file_path, "r", encoding="utf-8") as f:
@@ -96,6 +134,8 @@ async def upload_document(
         if not text.strip():
             raise HTTPException(status_code=400, detail="Could not extract text from file")
             
+        upload_progress[conversation_id] = {"status": "indexing", "progress": 90, "message": "Indexando documentos..."}
+        
         # Chunk text (Simple chunking by characters for now)
         # In production, use a smarter splitter (recursive character splitter)
         chunk_size = 1000
@@ -120,7 +160,16 @@ async def upload_document(
         return {"status": "success", "filename": file.filename, "chunks_processed": len(chunks)}
         
     except Exception as e:
+        upload_progress[conversation_id] = {"status": "error", "progress": 0, "message": str(e)}
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Keep success status for a moment so frontend sees 100%
+        if conversation_id in upload_progress and upload_progress[conversation_id]["status"] != "error":
+             upload_progress[conversation_id] = {"status": "complete", "progress": 100, "message": "Completado"}
+
+@router.get("/progress/{conversation_id}")
+async def get_upload_progress(conversation_id: str):
+    return upload_progress.get(conversation_id, {"status": "idle", "progress": 0, "message": ""})
 
 @router.get("/documents")
 async def list_documents(conversation_id: str = Query(...)):
@@ -168,24 +217,26 @@ async def query_rag(request: QueryRequest):
 
         results = collection.query(
             query_texts=[request.query],
-            n_results=request.n_results,
+            n_results=15, # Fetch more candidates for reranking
             where=where_clause
         )
         
         # Flatten results
         documents = results['documents'][0]
         metadatas = results['metadatas'][0]
-        distances = results['distances'][0]
         
-        response = []
+        # Prepare for Reranking
+        candidates = []
         for i in range(len(documents)):
-            response.append({
+            candidates.append({
                 "content": documents[i],
-                "metadata": metadatas[i],
-                "distance": distances[i]
+                "metadata": metadatas[i]
             })
             
-        return {"results": response}
+        # Rerank with FlashRank
+        reranked_results = rerank_documents(request.query, candidates, top_k=request.n_results)
+        
+        return {"results": reranked_results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

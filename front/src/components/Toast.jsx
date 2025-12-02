@@ -22,7 +22,9 @@ const Toast = ({ message, type = 'info', onClose, duration = 3000 }) => {
     return (
         <div className={`toast toast-${type}`}>
             <div className="toast-icon">{getIcon()}</div>
-            <div className="toast-message">{message}</div>
+            <div className="toast-content">
+                <div className="toast-message">{message}</div>
+            </div>
             <button className="toast-close" onClick={onClose}>
                 <X size={14} />
             </button>

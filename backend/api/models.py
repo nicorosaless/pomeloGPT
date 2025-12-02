@@ -2,6 +2,14 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import ollama
 from typing import List, Optional
+import time
+
+# Simple in-memory cache
+_models_cache = {
+    "data": None,
+    "timestamp": 0,
+    "ttl": 60  # seconds
+}
 
 router = APIRouter(prefix="/models", tags=["models"])
 
@@ -124,12 +132,24 @@ AVAILABLE_MODELS = [
 
 @router.get("/installed")
 async def list_installed_models():
+    global _models_cache
+    current_time = time.time()
+    
+    # Check cache
+    if _models_cache["data"] and (current_time - _models_cache["timestamp"] < _models_cache["ttl"]):
+        print("Returning cached models list")
+        return _models_cache["data"]
+
     print("Fetching installed models from Ollama...")
     try:
         client = ollama.AsyncClient()
         response = await client.list()
         print(f"Ollama response: {response}")
-        # response['models'] is a list of dicts
+        
+        # Update cache
+        _models_cache["data"] = response
+        _models_cache["timestamp"] = current_time
+        
         return response
     except Exception as e:
         print(f"Error fetching models: {e}")

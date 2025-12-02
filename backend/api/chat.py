@@ -29,30 +29,36 @@ class RenameChatRequest(BaseModel):
 
 @router.get("/history")
 async def get_history():
-    return {"conversations": database.get_conversations()}
+    conversations = await database.get_conversations()
+    return {"conversations": conversations}
 
 @router.post("/new")
 async def create_chat(request: CreateChatRequest):
-    chat_id = database.create_conversation(request.title)
+    chat_id = await database.create_conversation(request.title)
     return {"id": chat_id, "title": request.title}
 
 @router.get("/{conversation_id}")
 async def get_chat_messages(conversation_id: str):
-    messages = database.get_messages(conversation_id)
+    messages = await database.get_messages(conversation_id)
     return {"messages": messages}
 
 @router.delete("/{conversation_id}")
 async def delete_chat(conversation_id: str):
-    database.delete_conversation(conversation_id)
+    await database.delete_conversation(conversation_id)
     return {"status": "success"}
 
 @router.put("/{conversation_id}/title")
 async def rename_chat(conversation_id: str, request: RenameChatRequest):
-    database.update_conversation_title(conversation_id, request.title)
+    await database.update_conversation_title(conversation_id, request.title)
     return {"status": "success", "title": request.title}
 
 SYSTEM_PROMPT = """Helpful assistant. Respond in user's language.
-Math: inline $x$, display $$equation$$. Always wrap subscripts: $d_1$, $x^2$.
+If using RAG context, answer ONLY based on context.
+ALWAYS use LaTeX for mathematical equations.
+- Use $...$ for inline math (e.g., $E=mc^2$).
+- Use $$...$$ for block math.
+- Do NOT use unicode characters for math (like θ or ∑), use LaTeX commands (\\theta, \\sum).
+Always wrap subscripts: $d_1$, $x^2$.
 Code: `inline` or ```blocks```."""
 
 async def generate_search_queries(messages: list, model: str = "gemma3:4b") -> dict:
@@ -167,7 +173,7 @@ async def chat_stream(request: ChatRequest):
     try:
         conversation_id = request.conversation_id
         if not conversation_id:
-            conversation_id = database.create_conversation()
+            conversation_id = await database.create_conversation()
         current_system_prompt = SYSTEM_PROMPT
         last_message = request.messages[-1]
 
@@ -350,12 +356,12 @@ Inform the user and answer using general knowledge. Mention information may not 
                 
                 # Save messages to DB
                 if conversation_id:
-                    database.add_message(conversation_id, last_message["role"], last_message["content"])
-                    msgs = database.get_messages(conversation_id)
+                    await database.add_message(conversation_id, last_message["role"], last_message["content"])
+                    msgs = await database.get_messages(conversation_id)
                     if len(msgs) <= 1:
                         new_title = last_message["content"][:30] + "..."
-                        database.update_conversation_title(conversation_id, new_title)
-                    database.add_message(conversation_id, "assistant", full_response)
+                        await database.update_conversation_title(conversation_id, new_title)
+                    await database.add_message(conversation_id, "assistant", full_response)
             except Exception as e:
                 yield json.dumps({"error": str(e)}) + "\n"
 
