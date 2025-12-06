@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Globe, Paperclip, ArrowUp, FileText, X } from 'lucide-react';
+import { Globe, Paperclip, ArrowUp, FileText, X, Square } from 'lucide-react';
 import ModelSelector from './ModelSelector';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -43,6 +43,7 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
     const lastUserMessageRef = useRef(null);
     const shouldScrollToUserRef = useRef(false);
     const shouldScrollToBottomRef = useRef(true);
+    const abortControllerRef = useRef(null);
     // Tracks desired scroll direction after messages update
 
 
@@ -314,6 +315,10 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
 
             // 3. Send message
             console.log("Starting stream...");
+
+            // Create AbortController for this request
+            abortControllerRef.current = new AbortController();
+
             const response = await fetch('http://localhost:8000/chat/stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -328,7 +333,8 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
                     use_rag: attachments.length > 0, // Use RAG if we have existing files
                     use_web_search: webSearchEnabled,
                     searxng_url: "http://localhost:8080"
-                })
+                }),
+                signal: abortControllerRef.current.signal
             });
 
             if (!response.body) throw new Error('No response body');
@@ -401,8 +407,14 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
 
             console.log("=== handleSend COMPLETE ===");
         } catch (err) {
-            console.error("=== handleSend ERROR ===", err);
-            setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${err.message || 'Failed to get response.'}` }]);
+            // Check if error is due to abort
+            if (err.name === 'AbortError') {
+                console.log("=== handleSend ABORTED ===");
+                // Don't show error message for user-initiated abort
+            } else {
+                console.error("=== handleSend ERROR ===", err);
+                setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${err.message || 'Failed to get response.'}` }]);
+            }
         } finally {
             // Clear loading interval if it's still running
             if (loadingInterval) {
@@ -411,7 +423,15 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
             setLoadingMessage('');
             setStreaming(false);
             isStreamingRef.current = false;
+            abortControllerRef.current = null;
             console.log("=== handleSend FINALLY ===");
+        }
+    };
+
+    const handleStopStream = () => {
+        console.log("=== handleStopStream ===");
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
         }
     };
 
@@ -597,9 +617,15 @@ const ChatWindow = ({ conversationId, onConversationCreated, onRefreshSidebar })
                         placeholder="Message PomeloGPT..."
                         rows={1}
                     />
-                    <button onClick={handleSend} className="send-button" disabled={!input.trim() || streaming}>
-                        <ArrowUp size={20} />
-                    </button>
+                    {streaming ? (
+                        <button onClick={handleStopStream} className="send-button stop-button" title="Stop generation">
+                            <Square size={16} />
+                        </button>
+                    ) : (
+                        <button onClick={handleSend} className="send-button" disabled={!input.trim()}>
+                            <ArrowUp size={20} />
+                        </button>
+                    )}
                 </div>
             </div>
         </div>

@@ -171,25 +171,21 @@ async def get_model_info(name: str):
 @router.post("/pull")
 async def pull_model(request: PullModelRequest):
     model_name = f"{request.name}:{request.tag}"
-    try:
-        # Trigger pull. Note: This is a blocking call in simple implementation.
-        # For a real progress bar, we'd need streaming or a background task.
-        # We'll use streaming response in a future iteration or simple blocking for now
-        # to keep it simple, but let's try to return a stream if possible or just start it.
-        # For now, we will start it and return success, but the frontend won't get progress 
-        # unless we implement streaming.
-        
-        # Better approach for "manager": return a stream of progress
-        # But FastAPI streaming requires a generator.
-        
-        # For now, just trigger it and return. It will block until done.
-        # In a real app, use BackgroundTasks.
-        client = ollama.AsyncClient()
-        await client.pull(model_name)
-        
-        return {"status": "success", "message": f"Pulled {model_name}"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    
+    async def generate():
+        try:
+            client = ollama.AsyncClient()
+            # stream=True yields a stream of progress objects
+            async for progress in await client.pull(model_name, stream=True):
+                # Yield progress as a JSON string line
+                yield json.dumps(progress) + "\n"
+        except Exception as e:
+            yield json.dumps({"error": str(e)}) + "\n"
+
+    from fastapi.responses import StreamingResponse
+    import json
+    
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 @router.delete("/{name}")
 async def delete_model(name: str):
@@ -200,3 +196,62 @@ async def delete_model(name: str):
     except Exception as e:
         # Ollama might return 404 if not found, handle gracefully?
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/lookup/{name}")
+async def lookup_model_tags(name: str):
+    """
+    Scrapes the Ollama library page for a given model to find available tags.
+    """
+    import requests
+    from bs4 import BeautifulSoup
+    import re
+
+    url = f"https://ollama.com/library/{name}/tags"
+    print(f"Scraping tags from: {url}")
+    
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code == 404:
+            return {"tags": []}
+        if response.status_code != 200:
+            raise HTTPException(status_code=response.status_code, detail="Failed to fetch Ollama library page")
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        tags = []
+        
+        # Ollama tags page structure (best guess based on current layout)
+        # Usually they are in links or divs.
+        # Looking at the page source would be ideal, but let's try a generic approach
+        # or target specific classes if known.
+        # As of late 2024/2025, tags are often in elements with specific classes.
+        # Let's try to find elements that look like tags.
+        
+        # Strategy: Look for links to specific tag versions
+        # The tags page lists versions as links like: <a href="/library/model:tag">
+        # Example: /library/ministral-3:latest, /library/ministral-3:3b
+        
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            # Pattern: /library/{name}:{tag}
+            # We need to be careful to match exactly the model name followed by a colon
+            prefix = f"/library/{name}:"
+            if href.startswith(prefix):
+                tag = href[len(prefix):]
+                # Some links might be complex, but usually it's just the tag
+                # Filter out any potential noise and "cloud" tags
+                if tag and tag not in tags and "cloud" not in tag.lower():
+                    tags.append(tag)
+        
+        # Fallback: sometimes tags might be listed differently or the URL structure changes.
+        # But for now, this seems to be the standard way Ollama lists tags.
+        
+        # If no tags found, try to find "latest" in text as a fallback
+        if not tags and "latest" in response.text:
+            tags.append("latest")
+            
+        return {"tags": tags[:30]} # Increased limit slightly
+        
+    except Exception as e:
+        print(f"Error scraping tags: {e}")
+        # Don't fail hard, just return empty list so UI can fallback to manual entry
+        return {"tags": [], "error": str(e)}

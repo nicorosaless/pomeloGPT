@@ -810,6 +810,31 @@ pre code {
   cursor: not-allowed;
 }
 
+/* Stop button during streaming */
+.send-button.stop-button {
+  background-color: #ef4444;
+  animation: pulse-stop 1.5s ease-in-out infinite;
+}
+
+.send-button.stop-button:hover {
+  background-color: #dc2626;
+  animation: none;
+}
+
+@keyframes pulse-stop {
+
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.8;
+    transform: scale(0.95);
+  }
+}
+
 /* Model Selector Override for Chat */
 .chat-input-container .model-selector-container {
   background: var(--bg-secondary);
